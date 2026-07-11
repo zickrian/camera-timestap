@@ -4,8 +4,7 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { 
   Type, AlignLeft, AlignCenter, AlignRight, 
-  Image as ImageIcon, Camera, Trash2, Download,
-  AlignVerticalSpaceAround, AlignVerticalSpaceBetween, 
+  Image as ImageIcon, Camera, Trash2,
   AlignVerticalJustifyStart, AlignVerticalJustifyEnd, AlignVerticalJustifyCenter,
   ChevronDown
 } from "lucide-react";
@@ -49,6 +48,8 @@ const FigmaIconButton = ({ icon: Icon, active, onClick }: {icon: React.ElementTy
 export default function CameraApp() {
   // Layers / Photos Cache
   const [photos, setPhotos] = useState<{id: string, url: string, name: string}[]>([]);
+  const [exportQuality, setExportQuality] = useState("MAX");
+  const [exportSaveSettings, setExportSaveSettings] = useState(true);
   const [activeLayer, setActiveLayer] = useState<string>("camera"); // "camera" or photo id
 
   // Camera State
@@ -79,7 +80,7 @@ export default function CameraApp() {
   // Data
   const [liveTime, setLiveTime] = useState(new Date());
   const [gpsAddress, setGpsAddress] = useState("");
-  const [coordinates, setCoordinates] = useState<{lat: number, lon: number} | null>(null);
+
 
   // Time ticker
   useEffect(() => {
@@ -145,7 +146,7 @@ export default function CameraApp() {
       setCameraActive(true);
       setActiveLayer("camera");
       setCameraError("");
-    } catch (err: unknown) {
+    } catch {
       setCameraError("Akses Kamera Ditolak.");
     }
   };
@@ -162,7 +163,7 @@ export default function CameraApp() {
     return () => {
       stopCamera();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   const wrapText = (text: string, maxChars: number) => {
@@ -317,14 +318,7 @@ export default function CameraApp() {
           {activeLayer === "camera" && cameraActive ? (
              <span className="text-[11px] font-medium text-[#888]">Mode Kamera Aktif - Tekan tombol bulat di bawah layar untuk memotret</span>
           ) : activePhotoObj ? (
-             <button onClick={() => {
-                const link = document.createElement("a");
-                link.download = `${activePhotoObj.name}.jpg`;
-                link.href = activePhotoObj.url;
-                link.click();
-             }} className="px-4 py-1 bg-[#0f8bfd] hover:bg-[#0d7be0] text-white text-[11px] font-medium rounded-sm flex items-center gap-1.5 shadow-sm transition-colors">
-               <Download className="h-3.5 w-3.5" /> Export Selected
-             </button>
+             <span className="text-[11px] font-medium text-[#888]">Preview Mode: {activePhotoObj.name}</span>
           ) : null}
         </div>
 
@@ -425,11 +419,13 @@ export default function CameraApp() {
         </div>
       </div>
 
-      {/* RIGHT PANEL: Figma Properties */}
+      {/* RIGHT PANEL: Figma Properties & Canva Export */}
       <div className="w-[240px] bg-[#2c2c2c] border-l border-[#111] flex flex-col shrink-0 shadow-lg z-20 overflow-y-auto">
-        <div className="h-10 flex items-center px-4 border-b border-[#111]">
-          <span className="text-[11px] font-semibold text-white">Design</span>
-        </div>
+        {activeLayer === "camera" ? (
+          <>
+            <div className="h-10 flex items-center px-4 border-b border-[#111] shrink-0">
+              <span className="text-[11px] font-semibold text-white">Design</span>
+            </div>
 
         {/* Section: Typography */}
         <div className="border-b border-[#111] py-3">
@@ -553,7 +549,89 @@ export default function CameraApp() {
             />
           </div>
         </div>
+        </>
+        ) : activePhotoObj ? (
+          <>
+            <div className="h-10 flex items-center px-4 border-b border-[#111] shrink-0">
+              <span className="text-[11px] font-semibold text-white">Export setting</span>
+            </div>
+            
+            <div className="p-4 flex flex-col gap-6 flex-1">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-semibold text-white">Size</span>
+                  <span className="text-[10px] text-[#888]">1,920 × 1,080 px</span>
+                </div>
+              </div>
 
+              <div>
+                <div className="flex items-center gap-1 mb-2">
+                  <span className="text-[11px] font-semibold text-white">Quality</span>
+                </div>
+                {/* Segmented Control */}
+                <div className="bg-[#1e1e1e] p-1 flex rounded-[6px] border border-[#333]">
+                  <button onClick={() => setExportQuality("SD")} className={`flex-1 py-1.5 text-[11px] font-medium rounded-[4px] transition-colors ${exportQuality === "SD" ? "text-white bg-[#404040] shadow-sm" : "text-[#888] hover:text-[#d4d4d4]"}`}>SD</button>
+                  <button onClick={() => setExportQuality("HD")} className={`flex-1 py-1.5 text-[11px] font-medium rounded-[4px] transition-colors ${exportQuality === "HD" ? "text-white bg-[#404040] shadow-sm" : "text-[#888] hover:text-[#d4d4d4]"}`}>HD</button>
+                  <button onClick={() => setExportQuality("MAX")} className={`flex-1 py-1.5 text-[11px] font-medium rounded-[4px] transition-colors ${exportQuality === "MAX" ? "text-white bg-[#404040] shadow-sm" : "text-[#888] hover:text-[#d4d4d4]"}`}>MAX</button>
+                </div>
+              </div>
+
+              
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-medium text-[#d4d4d4]">Save download settings</span>
+                <div onClick={() => setExportSaveSettings(!exportSaveSettings)} className={`w-8 h-4 rounded-full relative cursor-pointer transition-colors ${exportSaveSettings ? "bg-[#8b3dff]" : "bg-[#444] hover:bg-[#555]"}`}>
+                  <div className={`absolute top-[2px] w-3 h-3 rounded-full transition-all ${exportSaveSettings ? "right-[2px] bg-white" : "left-[2px] bg-[#888]"}`}></div>
+                </div>
+              </div>
+
+              <div className="bg-[#594218]/40 border border-[#594218] p-3 rounded-md mt-2 relative">
+                <p className="text-[10.5px] text-[#e0cfb8] leading-relaxed relative z-10">
+                  <strong className="text-white">{exportQuality} Selected.</strong> 
+                  <br/><br/>
+                  {exportQuality === "MAX" ? "Exporting in MAX resolution ensures your photo and watermark remain exactly 1:1 original without any compression." : `Exporting in ${exportQuality} will apply standard compression to reduce file size.`}
+                </p>
+              </div>
+
+              <div className="mt-auto pt-4 pb-2">
+                <button 
+                  onClick={() => {
+                    if (exportQuality !== "MAX") {
+                       const img = new window.Image();
+                       img.onload = () => {
+                          const canvas = document.createElement("canvas");
+                          let scale = 1;
+                          if (exportQuality === "SD") scale = 0.5;
+                          if (exportQuality === "HD") scale = 0.75;
+                          canvas.width = img.width * scale;
+                          canvas.height = img.height * scale;
+                          const ctx = canvas.getContext("2d");
+                          if (ctx) {
+                             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                             const format = "image/jpeg";
+                             const qual = exportQuality === "SD" ? 0.6 : (exportQuality === "HD" ? 0.8 : 1.0);
+                             const dlUrl = canvas.toDataURL(format, qual);
+                             const link = document.createElement("a");
+                             link.download = `${activePhotoObj.name}.jpg`;
+                             link.href = dlUrl;
+                             link.click();
+                          }
+                       };
+                       img.src = activePhotoObj.url;
+                    } else {
+                       const link = document.createElement("a");
+                       link.download = `${activePhotoObj.name}.jpg`;
+                       link.href = activePhotoObj.url;
+                       link.click();
+                    }
+                  }}
+                  className="w-full py-2.5 bg-[#8b3dff] hover:bg-[#7b2dee] text-white text-[13px] font-semibold rounded-[8px] transition-colors shadow-sm"
+                >
+                  Download
+                </button>
+              </div>
+            </div>
+          </>
+        ) : null}
       </div>
     </div>
   );
