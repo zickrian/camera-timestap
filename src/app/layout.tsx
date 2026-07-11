@@ -7,8 +7,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Figma Camera",
-  description: "Camera app with Figma UI",
+  title: "Camera Timestamp",
+  description: "Camera application with timestamp and location watermark templates",
 };
 
 export default function RootLayout({

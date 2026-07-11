@@ -45,12 +45,41 @@ const FigmaIconButton = ({ icon: Icon, active, onClick }: {icon: React.ElementTy
   </button>
 );
 
+const drawRoundedRect = (ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) => {
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.lineTo(x + width - radius, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+  ctx.lineTo(x + width, y + height - radius);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+  ctx.lineTo(x + radius, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+  ctx.lineTo(x, y + radius);
+  ctx.quadraticCurveTo(x, y, x + radius, y);
+  ctx.closePath();
+};
+
 export default function CameraApp() {
   // Layers / Photos Cache
   const [photos, setPhotos] = useState<{id: string, url: string, name: string}[]>([]);
   const [exportQuality, setExportQuality] = useState("MAX");
   const [exportSaveSettings, setExportSaveSettings] = useState(true);
   const [activeLayer, setActiveLayer] = useState<string>("camera"); // "camera" or photo id
+  
+  // Design presets and map coordinates states
+  const [designPreset, setDesignPreset] = useState("standard");
+  const [latLng, setLatLng] = useState<{lat: number, lng: number} | null>(null);
+  const [mapDataUrl, setMapDataUrl] = useState<string>("");
+
+  // Countdown Timer states
+  const [timerDuration, setTimerDuration] = useState(0); // in seconds
+  const [isCustomTimer, setIsCustomTimer] = useState(false);
+  const [customTimerInput, setCustomTimerInput] = useState("10");
+  const [isCountingDown, setIsCountingDown] = useState(false);
+  const [countdownValue, setCountdownValue] = useState(0);
+  const [showFlash, setShowFlash] = useState(false);
+  
+  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Mobile responsiveness sidebar states
   const [showLeftSidebar, setShowLeftSidebar] = useState(false);
@@ -74,9 +103,9 @@ export default function CameraApp() {
   const [alignX, setAlignX] = useState<"left" | "center" | "right">("right");
   const [alignY, setAlignY] = useState<"top" | "center" | "bottom">("bottom");
   
-  const [fillColor, setFillColor] = useState("#ffffff");
+  const [fillColor, setFillColor] = useState("#000000");
   const [strokeColor, setStrokeColor] = useState("#000000");
-  const [hasStroke, setHasStroke] = useState(true);
+  const [hasStroke, setHasStroke] = useState(false);
   
   const [template, setTemplate] = useState("standard");
   const [manualLocation, setManualLocation] = useState("");
@@ -115,6 +144,7 @@ export default function CameraApp() {
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         const { latitude, longitude } = pos.coords;
+        setLatLng({ lat: latitude, lng: longitude });
         try {
           const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=18&addressdetails=1`);
           if (res.ok) {
@@ -122,13 +152,95 @@ export default function CameraApp() {
             setGpsAddress(data.display_name || `Lat: ${latitude.toFixed(5)}, Lon: ${longitude.toFixed(5)}`);
           }
         } catch {
-          // ignore
+          setGpsAddress(`Lat: ${latitude.toFixed(5)}, Lon: ${longitude.toFixed(5)}`);
         }
       },
       () => setGpsAddress("Location denied/unavailable"),
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
   }, []);
+
+  // Fetch and render Map Tile to Data URL
+  useEffect(() => {
+    if (!latLng) return;
+    
+    let isMounted = true;
+    const renderMap = async () => {
+      try {
+        const { lat, lng } = latLng;
+        const zoom = 15;
+        const scale = Math.pow(2, zoom);
+        
+        // Calculate fractional tile coordinates
+        const tileX = (lng + 180) / 360 * scale;
+        const latRad = lat * Math.PI / 180;
+        const tileY = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * scale;
+        
+        // Canvas size
+        const w = 160;
+        const h = 100;
+        
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        
+        // Find surrounding tiles to fetch (usually a 2x2 grid)
+        const minX = Math.floor(tileX - (w / 2) / 256);
+        const maxX = Math.floor(tileX + (w / 2) / 256);
+        const minY = Math.floor(tileY - (h / 2) / 256);
+        const maxY = Math.floor(tileY + (h / 2) / 256);
+        
+        const loadImage = (url: string) => {
+          return new Promise<HTMLImageElement | null>((resolve) => {
+            const img = new Image();
+            img.crossOrigin = "anonymous";
+            img.src = url;
+            img.onload = () => resolve(img);
+            img.onerror = () => resolve(null);
+          });
+        };
+
+        const tilePromises = [];
+        for (let x = minX; x <= maxX; x++) {
+          for (let y = minY; y <= maxY; y++) {
+            const url = `https://a.basemaps.cartocdn.com/dark_all/${zoom}/${x}/${y}.png`;
+            tilePromises.push(loadImage(url).then(img => ({ img, x, y })));
+          }
+        }
+        
+        const loadedTiles = await Promise.all(tilePromises);
+        if (!isMounted) return;
+        
+        ctx.fillStyle = "#121212";
+        ctx.fillRect(0, 0, w, h);
+        
+        loadedTiles.forEach(({ img, x, y }) => {
+          if (!img) return;
+          const dx = (x - tileX) * 256;
+          const dy = (y - tileY) * 256;
+          ctx.drawImage(img, (w / 2) + dx, (h / 2) + dy);
+        });
+        
+        // Draw a small blue accent marker at the center
+        ctx.fillStyle = "#0f8bfd";
+        ctx.beginPath();
+        ctx.arc(w / 2, h / 2, 4, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        
+        setMapDataUrl(canvas.toDataURL());
+      } catch (err) {
+        console.error("Map render error:", err);
+      }
+    };
+    
+    renderMap();
+    return () => { isMounted = false; };
+  }, [latLng]);
 
   const startCamera = async () => {
     try {
@@ -166,6 +278,9 @@ export default function CameraApp() {
   useEffect(() => {
     return () => {
       stopCamera();
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+      }
     };
 
   }, []);
@@ -198,7 +313,7 @@ export default function CameraApp() {
     return [timeStr, ...wrappedLoc]; // standard
   };
 
-  const capturePhoto = () => {
+  const capturePhoto = async () => {
     if (!videoRef.current || !canvasRef.current) return;
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -217,38 +332,198 @@ export default function CameraApp() {
     ctx.drawImage(video, 0, 0, width, height);
     ctx.restore();
 
-    // Draw Watermark
-    const lines = getWatermarkLines();
+    // Base sizing variables
     const size = parseInt(fontSize) || 32;
-    ctx.font = `${fontWeight} ${size}px ${fontFamily}, sans-serif`;
-    
     const padding = size * 1.5;
-    const lineHeight = size * 1.2;
 
-    ctx.fillStyle = fillColor;
-    if (hasStroke) {
-      ctx.strokeStyle = strokeColor;
-      ctx.lineWidth = Math.max(1, size / 15);
+    // Safe roundRect checking/calling interface
+    const ctxWithRoundRect = ctx as unknown as { roundRect(x: number, y: number, w: number, h: number, r: number): void };
+
+    if (designPreset === "standard" || designPreset === "retro") {
+      // Standard / Retro text layout
+      const lines = getWatermarkLines();
+      ctx.font = `${fontWeight} ${size}px ${fontFamily}, sans-serif`;
+      const lineHeight = size * 1.2;
+
+      ctx.fillStyle = fillColor;
+      if (hasStroke) {
+        ctx.strokeStyle = strokeColor;
+        ctx.lineWidth = Math.max(1, size / 15);
+      }
+      
+      ctx.textAlign = alignX;
+
+      // Calculate X
+      let xPos = padding;
+      if (alignX === "center") xPos = width / 2;
+      if (alignX === "right") xPos = width - padding;
+
+      // Calculate Y
+      const totalTextHeight = lines.length * lineHeight;
+      let startY = padding + size; // top
+      if (alignY === "center") startY = (height / 2) - (totalTextHeight / 2) + size;
+      if (alignY === "bottom") startY = height - padding - totalTextHeight + size;
+
+      lines.forEach((line, i) => {
+        const y = startY + (i * lineHeight);
+        if (hasStroke) ctx.strokeText(line, xPos, y);
+        ctx.fillText(line, xPos, y);
+      });
+    } else if (designPreset === "dark_card") {
+      // Figma Dark Card Layout
+      const lines = getWatermarkLines();
+      ctx.font = `${fontWeight} ${size}px ${fontFamily}, sans-serif`;
+      const lineHeight = size * 1.2;
+
+      // Calculate text block size
+      ctx.textAlign = "left"; // Draw text left-aligned inside card
+      let maxLineWidth = 0;
+      lines.forEach(line => {
+        const w = ctx.measureText(line).width;
+        if (w > maxLineWidth) maxLineWidth = w;
+      });
+
+      const cardPadding = size * 0.4;
+      const cardWidth = maxLineWidth + cardPadding * 2;
+      const cardHeight = lines.length * lineHeight - (lineHeight - size) + cardPadding * 2;
+
+      // Calculate card position
+      let cardX = padding;
+      if (alignX === "center") cardX = (width - cardWidth) / 2;
+      if (alignX === "right") cardX = width - padding - cardWidth;
+
+      let cardY = padding;
+      if (alignY === "center") cardY = (height - cardHeight) / 2;
+      if (alignY === "bottom") cardY = height - padding - cardHeight;
+
+      // Draw Card Background
+      ctx.fillStyle = "rgba(15, 15, 15, 0.55)";
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+      ctx.lineWidth = Math.max(1, size / 30);
+      
+      const radius = size * 0.2;
+      ctx.beginPath();
+      if ('roundRect' in ctx && typeof ctxWithRoundRect.roundRect === 'function') {
+        ctxWithRoundRect.roundRect(cardX, cardY, cardWidth, cardHeight, radius);
+      } else {
+        drawRoundedRect(ctx, cardX, cardY, cardWidth, cardHeight, radius);
+      }
+      ctx.fill();
+      ctx.stroke();
+
+      // Draw Text
+      ctx.fillStyle = fillColor;
+      const textStartX = cardX + cardPadding;
+      const textStartY = cardY + cardPadding + size * 0.85;
+
+      lines.forEach((line, i) => {
+        ctx.fillText(line, textStartX, textStartY + (i * lineHeight));
+      });
+    } else if (designPreset === "map_card") {
+      // GPS Map Card Layout
+      const scaleFactor = size / 32;
+      const cardWidth = 420 * scaleFactor;
+      const cardHeight = 120 * scaleFactor;
+      const cardPadding = 16 * scaleFactor;
+      const mapW = 120 * scaleFactor;
+      const mapH = 88 * scaleFactor;
+      const gap = 16 * scaleFactor;
+
+      // Calculate position
+      let cardX = padding;
+      if (alignX === "center") cardX = (width - cardWidth) / 2;
+      if (alignX === "right") cardX = width - padding - cardWidth;
+
+      let cardY = padding;
+      if (alignY === "center") cardY = (height - cardHeight) / 2;
+      if (alignY === "bottom") cardY = height - padding - cardHeight;
+
+      // Draw Card Background
+      ctx.fillStyle = "rgba(15, 15, 15, 0.55)";
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+      ctx.lineWidth = Math.max(1, 1.5 * scaleFactor);
+      
+      const radius = 8 * scaleFactor;
+      ctx.beginPath();
+      if ('roundRect' in ctx && typeof ctxWithRoundRect.roundRect === 'function') {
+        ctxWithRoundRect.roundRect(cardX, cardY, cardWidth, cardHeight, radius);
+      } else {
+        drawRoundedRect(ctx, cardX, cardY, cardWidth, cardHeight, radius);
+      }
+      ctx.fill();
+      ctx.stroke();
+
+      // Draw Map Area
+      const mapX = cardX + cardPadding;
+      const mapY = cardY + cardPadding;
+
+      ctx.save();
+      // Clip map area
+      ctx.beginPath();
+      if ('roundRect' in ctx && typeof ctxWithRoundRect.roundRect === 'function') {
+        ctxWithRoundRect.roundRect(mapX, mapY, mapW, mapH, 4 * scaleFactor);
+      } else {
+        drawRoundedRect(ctx, mapX, mapY, mapW, mapH, 4 * scaleFactor);
+      }
+      ctx.clip();
+
+      if (mapDataUrl) {
+        try {
+          const mapImg = await new Promise<HTMLImageElement>((resolve, reject) => {
+            const img = new Image();
+            img.src = mapDataUrl;
+            img.onload = () => resolve(img);
+            img.onerror = () => reject();
+          });
+          ctx.drawImage(mapImg, mapX, mapY, mapW, mapH);
+        } catch {
+          // Fallback map background
+          ctx.fillStyle = "#121212";
+          ctx.fillRect(mapX, mapY, mapW, mapH);
+        }
+      } else {
+        // Fallback map background
+        ctx.fillStyle = "#121212";
+        ctx.fillRect(mapX, mapY, mapW, mapH);
+      }
+      ctx.restore();
+
+      // Draw Map border
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      if ('roundRect' in ctx && typeof ctxWithRoundRect.roundRect === 'function') {
+        ctxWithRoundRect.roundRect(mapX, mapY, mapW, mapH, 4 * scaleFactor);
+      } else {
+        drawRoundedRect(ctx, mapX, mapY, mapW, mapH, 4 * scaleFactor);
+      }
+      ctx.stroke();
+
+      // Draw Text Details (Right side)
+      const textX = mapX + mapW + gap;
+      ctx.textAlign = "left";
+
+      // 1. Address (Wrapped)
+      ctx.font = `500 ${12 * scaleFactor}px ${fontFamily}, sans-serif`;
+      ctx.fillStyle = "#e0e0e0";
+      const locStr = manualLocation || gpsAddress || "Mencari Lokasi GPS...";
+      // Wrap location string to fit card
+      const maxChars = 26;
+      const wrappedLoc = wrapText(locStr, maxChars);
+      
+      let currentY = mapY + 16 * scaleFactor;
+      wrappedLoc.slice(0, 2).forEach((line) => {
+        ctx.fillText(line, textX, currentY);
+        currentY += 14 * scaleFactor;
+      });
+
+      // 2. Timestamp
+      ctx.font = `normal ${10 * scaleFactor}px monospace, sans-serif`;
+      ctx.fillStyle = "#888888";
+      
+      const timeY = mapY + 80 * scaleFactor;
+      ctx.fillText(liveTime.toLocaleString("en-GB"), textX, timeY);
     }
-    
-    ctx.textAlign = alignX;
-
-    // Calculate X
-    let xPos = padding;
-    if (alignX === "center") xPos = width / 2;
-    if (alignX === "right") xPos = width - padding;
-
-    // Calculate Y
-    const totalTextHeight = lines.length * lineHeight;
-    let startY = padding + size; // top
-    if (alignY === "center") startY = (height / 2) - (totalTextHeight / 2) + size;
-    if (alignY === "bottom") startY = height - padding - totalTextHeight + size;
-
-    lines.forEach((line, i) => {
-      const y = startY + (i * lineHeight);
-      if (hasStroke) ctx.strokeText(line, xPos, y);
-      ctx.fillText(line, xPos, y);
-    });
 
     const dataUrl = canvas.toDataURL("image/jpeg", 0.95);
     const newPhoto = {
@@ -259,6 +534,41 @@ export default function CameraApp() {
     
     setPhotos([newPhoto, ...photos]);
     setActiveLayer(newPhoto.id); // auto switch to preview
+  };
+
+  const startCaptureWithTimer = () => {
+    if (isCountingDown) return;
+    
+    const duration = isCustomTimer ? (parseInt(customTimerInput) || 0) : timerDuration;
+    
+    if (duration <= 0) {
+      // Flash effect
+      setShowFlash(true);
+      setTimeout(() => setShowFlash(false), 150);
+      capturePhoto();
+      return;
+    }
+
+    setIsCountingDown(true);
+    setCountdownValue(duration);
+
+    countdownIntervalRef.current = setInterval(() => {
+      setCountdownValue((prev) => {
+        if (prev <= 1) {
+          if (countdownIntervalRef.current) {
+            clearInterval(countdownIntervalRef.current);
+            countdownIntervalRef.current = null;
+          }
+          setIsCountingDown(false);
+          // Trigger visual flash
+          setShowFlash(true);
+          setTimeout(() => setShowFlash(false), 150);
+          capturePhoto();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
   };
 
   const activePhotoObj = photos.find(p => p.id === activeLayer);
@@ -385,26 +695,44 @@ export default function CameraApp() {
 
         {/* Canvas Workspace */}
         <div className="flex-1 overflow-auto flex items-center justify-center p-2 sm:p-4 md:p-8 bg-[#1e1e1e]">
-          <div className="relative shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_10px_30px_rgba(0,0,0,0.5)] bg-black w-fit mx-auto" style={{ maxHeight: '100%', maxWidth: '100%' }}>
+          <div className="flex flex-col items-center gap-4 max-h-full max-w-full">
+            <div 
+              className={`relative w-fit mx-auto ${
+                (activeLayer === "camera" && !cameraActive) 
+                  ? "bg-transparent" 
+                  : "shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_10px_30px_rgba(0,0,0,0.5)] bg-black"
+              }`} 
+              style={{ maxHeight: '100%', maxWidth: '100%' }}
+            >
             
             {/* The Live Camera Area (Always mounted so stream doesn't break) */}
             <div className={activeLayer === "camera" ? "relative w-fit mx-auto" : "hidden"}>
                 
                 {/* Manual Permission Screen */}
                 {!cameraActive && !cameraError && (
-                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm z-20 p-4">
-                     <div className="flex flex-col items-center bg-[#2c2c2c] p-6 sm:p-8 rounded-[6px] border border-[#383838] shadow-2xl w-full max-w-[320px]">
-                       <Camera className="h-10 w-10 text-[#888] mb-4" />
-                       <p className="text-white text-sm font-medium mb-1">Akses Diperlukan</p>
-                       <p className="text-[#888] text-[11px] mb-6 text-center leading-relaxed">Aplikasi ini membutuhkan akses Kamera dan Lokasi (GPS) untuk berfungsi dengan baik.</p>
-                       <button onClick={startCamera} className="px-6 py-2 bg-[#0f8bfd] hover:bg-[#0d7be0] rounded-[3px] text-xs font-medium text-white transition-colors shadow-lg w-full">
-                         Izinkan Akses
-                       </button>
-                     </div>
+                   <div className="flex flex-col items-center bg-[#2c2c2c] p-6 sm:p-8 rounded-[6px] border border-[#383838] shadow-2xl w-full max-w-[320px]">
+                     <Camera className="h-10 w-10 text-[#888] mb-4" />
+                     <p className="text-white text-sm font-medium mb-1">Akses Diperlukan</p>
+                     <p className="text-[#888] text-[11px] mb-6 text-center leading-relaxed">Aplikasi ini membutuhkan akses Kamera dan Lokasi (GPS) untuk berfungsi dengan baik.</p>
+                     <button onClick={startCamera} className="px-6 py-2 bg-[#0f8bfd] hover:bg-[#0d7be0] rounded-[3px] text-xs font-medium text-white transition-colors shadow-lg w-full">
+                       Izinkan Akses
+                     </button>
+                   </div>
+                )}
+
+                {/* Camera Error Screen */}
+                {!cameraActive && cameraError && (
+                   <div className="flex flex-col items-center bg-[#2c2c2c] p-6 sm:p-8 rounded-[6px] border border-[#383838] shadow-2xl w-full max-w-[320px]">
+                     <Camera className="h-10 w-10 text-red-500 mb-4" />
+                     <p className="text-red-400 text-sm font-medium mb-1">{cameraError}</p>
+                     <p className="text-[#888] text-[11px] mb-6 text-center leading-relaxed">Mohon klik ikon gembok 🔒 di samping URL browser, ubah izin Kamera & Lokasi menjadi &quot;Allow&quot;, lalu tekan tombol di bawah.</p>
+                     <button onClick={startCamera} className="px-6 py-2 bg-[#0f8bfd] hover:bg-[#0d7be0] rounded-[3px] text-xs font-medium text-white transition-colors shadow-lg w-full">
+                       Coba Lagi
+                     </button>
                    </div>
                 )}
  
-                <video ref={videoRef} autoPlay playsInline className={`max-h-[70vh] md:max-h-[75vh] w-auto max-w-full block transform scale-x-[-1] ${!cameraActive ? 'opacity-0' : 'opacity-100'}`} />
+                <video ref={videoRef} autoPlay playsInline className={`max-h-[70vh] md:max-h-[75vh] w-auto max-w-full block transform scale-x-[-1] ${!cameraActive ? 'hidden' : 'opacity-100'}`} />
                 <canvas ref={canvasRef} className="hidden" />
                 
                 {/* Live Watermark HTML Overlay using calculated videoScale */}
@@ -413,47 +741,129 @@ export default function CameraApp() {
                        style={{ 
                          padding: `${(parseInt(fontSize) * 1.5) * videoScale}px`,
                        }}>
-                  <div 
-                    className="absolute flex flex-col pointer-events-none"
-                    style={{
-                      fontFamily: fontFamily,
-                      fontWeight: fontWeight,
-                      fontSize: `${parseInt(fontSize) * videoScale}px`,
-                      color: fillColor,
-                      WebkitTextStroke: hasStroke ? `${Math.max(1, (parseInt(fontSize) / 15)) * videoScale}px ${strokeColor}` : undefined,
-                      lineHeight: 1.2,
-                      textAlign: alignX,
-                      
-                      // Positioning logic based on alignX and alignY
-                      top: alignY === "top" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : (alignY === "center" ? "50%" : "auto"),
-                      bottom: alignY === "bottom" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : "auto",
-                      transform: alignY === "center" ? "translateY(-50%)" : "none",
-                      
-                      left: alignX === "left" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : (alignX === "center" ? "50%" : "auto"),
-                      right: alignX === "right" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : "auto",
-                      ...(alignX === "center" ? { transform: `${alignY === "center" ? "translate(-50%, -50%)" : "translateX(-50%)"}` } : {}),
-                    }}
-                  >
-                    {getWatermarkLines().map((line, idx) => (
-                      <div key={idx}>{line}</div>
-                    ))}
-                  </div>
+                  {designPreset === "map_card" ? (
+                    <div 
+                      className="absolute flex items-center pointer-events-none bg-[rgba(15,15,15,0.45)] border border-[rgba(255,255,255,0.15)] rounded-[8px] shadow-[0_8px_32px_rgba(0,0,0,0.37)] backdrop-blur-md"
+                      style={{
+                        padding: `${12 * videoScale}px`,
+                        gap: `${12 * videoScale}px`,
+                        fontFamily: fontFamily,
+                        
+                        // Positioning logic
+                        top: alignY === "top" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : (alignY === "center" ? "50%" : "auto"),
+                        bottom: alignY === "bottom" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : "auto",
+                        transform: alignY === "center" ? "translateY(-50%)" : "none",
+                        
+                        left: alignX === "left" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : (alignX === "center" ? "50%" : "auto"),
+                        right: alignX === "right" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : "auto",
+                        ...(alignX === "center" ? { transform: `${alignY === "center" ? "translate(-50%, -50%)" : "translateX(-50%)"}` } : {}),
+                      }}
+                    >
+                      {/* Left side: Map */}
+                      <div 
+                        className="shrink-0 rounded-[4px] overflow-hidden border border-[#ffffff10] bg-[#121212] flex items-center justify-center relative"
+                        style={{
+                          width: `${120 * videoScale}px`,
+                          height: `${80 * videoScale}px`,
+                        }}
+                      >
+                        {mapDataUrl ? (
+                          <img src={mapDataUrl} alt="Map" className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="flex flex-col items-center justify-center text-center p-1">
+                            <div className="animate-spin rounded-full h-3 w-3 border border-[#888] border-t-transparent mb-1" />
+                            <span className="text-[7px] text-[#555] font-mono">LOADING MAP</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Right side: Info */}
+                      <div className="flex flex-col justify-between" style={{ height: `${80 * videoScale}px` }}>
+                        {/* Address */}
+                        <div 
+                          className="text-[#e0e0e0] font-medium leading-tight max-w-[200px]"
+                          style={{ 
+                            fontSize: `${11 * videoScale}px`
+                          }}
+                        >
+                          {manualLocation || gpsAddress || "Mencari Lokasi GPS..."}
+                        </div>
+
+                        <div className="flex flex-col font-mono text-[#888]">
+                          {/* Time */}
+                          <span style={{ fontSize: `${10 * videoScale}px` }}>
+                            {liveTime.toLocaleString("en-GB")}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ) : designPreset === "dark_card" ? (
+                    <div 
+                      className="absolute flex flex-col pointer-events-none bg-[rgba(15,15,15,0.45)] border border-[rgba(255,255,255,0.15)] rounded-[6px] shadow-[0_8px_32px_rgba(0,0,0,0.37)] backdrop-blur-md"
+                      style={{
+                        padding: `${12 * videoScale}px`,
+                        fontFamily: fontFamily,
+                        fontWeight: fontWeight,
+                        fontSize: `${parseInt(fontSize) * videoScale}px`,
+                        color: fillColor,
+                        lineHeight: 1.2,
+                        textAlign: "left",
+                        
+                        // Positioning logic based on alignX and alignY
+                        top: alignY === "top" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : (alignY === "center" ? "50%" : "auto"),
+                        bottom: alignY === "bottom" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : "auto",
+                        transform: alignY === "center" ? "translateY(-50%)" : "none",
+                        
+                        left: alignX === "left" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : (alignX === "center" ? "50%" : "auto"),
+                        right: alignX === "right" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : "auto",
+                        ...(alignX === "center" ? { transform: `${alignY === "center" ? "translate(-50%, -50%)" : "translateX(-50%)"}` } : {}),
+                      }}
+                    >
+                      {getWatermarkLines().map((line, idx) => (
+                        <div key={idx}>{line}</div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div 
+                      className="absolute flex flex-col pointer-events-none"
+                      style={{
+                        fontFamily: fontFamily,
+                        fontWeight: fontWeight,
+                        fontSize: `${parseInt(fontSize) * videoScale}px`,
+                        color: fillColor,
+                        WebkitTextStroke: hasStroke ? `${Math.max(1, (parseInt(fontSize) / 15)) * videoScale}px ${strokeColor}` : undefined,
+                        lineHeight: 1.2,
+                        textAlign: alignX,
+                        
+                        // Positioning logic based on alignX and alignY
+                        top: alignY === "top" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : (alignY === "center" ? "50%" : "auto"),
+                        bottom: alignY === "bottom" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : "auto",
+                        transform: alignY === "center" ? "translateY(-50%)" : "none",
+                        
+                        left: alignX === "left" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : (alignX === "center" ? "50%" : "auto"),
+                        right: alignX === "right" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : "auto",
+                        ...(alignX === "center" ? { transform: `${alignY === "center" ? "translate(-50%, -50%)" : "translateX(-50%)"}` } : {}),
+                      }}
+                    >
+                      {getWatermarkLines().map((line, idx) => (
+                        <div key={idx}>{line}</div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 )}
-
-                {/* Floating Capture Shutter Button */}
-                {cameraActive && (
-                  <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-20">
-                    <button 
-                      onClick={capturePhoto} 
-                      className="h-14 w-14 rounded-full bg-white/30 border-[3px] border-white flex items-center justify-center hover:bg-white/50 active:scale-90 transition-all shadow-[0_4px_20px_rgba(0,0,0,0.5)]"
-                      title="Ambil Foto"
-                    >
-                      <div className="h-10 w-10 rounded-full bg-white flex items-center justify-center shadow-sm">
-                        <Camera className="h-5 w-5 text-black" />
-                      </div>
-                    </button>
+                             {/* Countdown Overlay */}
+                {isCountingDown && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-xs z-30 transition-all">
+                    <div className="text-white text-8xl font-bold font-mono animate-bounce drop-shadow-[0_4px_12px_rgba(0,0,0,0.5)]">
+                      {countdownValue}
+                    </div>
                   </div>
+                )}
+
+                {/* Shutter Flash Overlay */}
+                {showFlash && (
+                  <div className="absolute inset-0 bg-white z-40 transition-opacity duration-150 opacity-100" />
                 )}
             </div>
  
@@ -465,19 +875,79 @@ export default function CameraApp() {
             {activeLayer !== "camera" && !activePhotoObj && (
               <div className="text-sm text-neutral-500">No layer selected</div>
             )}
-
-            {cameraError && activeLayer === "camera" && (
-               <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 px-4 text-center z-10">
-                 <Camera className="h-8 w-8 text-red-500 mb-2" />
-                 <p className="text-red-400 text-sm font-medium mb-1">{cameraError}</p>
-                 <p className="text-[#888] text-[11px] mb-4 max-w-xs">Mohon klik ikon gembok 🔒 di samping URL browser, ubah izin Kamera & Lokasi menjadi &quot;Allow&quot;, lalu tekan tombol di bawah.</p>
-                 <button onClick={startCamera} className="px-4 py-1.5 bg-[#333] hover:bg-[#444] border border-[#555] rounded-[3px] text-xs text-white transition-colors">
-                   Coba Lagi
-                 </button>
-               </div>
-            )}
           </div>
+
+          {/* Shutter and Timer Control Bar */}
+          {activeLayer === "camera" && cameraActive && (
+            <div className="bg-[#2c2c2c] border border-[#383838] px-4 py-2.5 rounded-full flex flex-wrap items-center justify-center gap-3 sm:gap-4 shadow-lg z-20 transition-all select-none">
+              
+              {/* Timer Control Group */}
+              <div className="flex items-center gap-2 pr-3 sm:pr-4 border-r border-[#383838]">
+                <span className="text-[10px] text-[#888] font-semibold uppercase tracking-wider">Timer:</span>
+                <div className="flex bg-[#1e1e1e] p-0.5 rounded-[4px] border border-[#333]">
+                  <button 
+                    onClick={() => { setTimerDuration(0); setIsCustomTimer(false); }}
+                    className={`px-2 py-1 text-[10px] font-semibold rounded-[3px] transition-colors ${timerDuration === 0 && !isCustomTimer ? "text-white bg-[#404040]" : "text-[#888] hover:text-white"}`}
+                  >
+                    Off
+                  </button>
+                  <button 
+                    onClick={() => { setTimerDuration(3); setIsCustomTimer(false); }}
+                    className={`px-2 py-1 text-[10px] font-semibold rounded-[3px] transition-colors ${timerDuration === 3 && !isCustomTimer ? "text-white bg-[#404040]" : "text-[#888] hover:text-white"}`}
+                  >
+                    3s
+                  </button>
+                  <button 
+                    onClick={() => { setTimerDuration(5); setIsCustomTimer(false); }}
+                    className={`px-2 py-1 text-[10px] font-semibold rounded-[3px] transition-colors ${timerDuration === 5 && !isCustomTimer ? "text-white bg-[#404040]" : "text-[#888] hover:text-white"}`}
+                  >
+                    5s
+                  </button>
+                  <button 
+                    onClick={() => { setIsCustomTimer(true); }}
+                    className={`px-2 py-1 text-[10px] font-semibold rounded-[3px] transition-colors ${isCustomTimer ? "text-white bg-[#404040]" : "text-[#888] hover:text-white"}`}
+                  >
+                    Custom
+                  </button>
+                </div>
+
+                {isCustomTimer && (
+                  <div className="flex items-center gap-1 bg-[#1e1e1e] border border-[#444] rounded-[3px] px-1 py-0.5 w-14 focus-within:border-[#a855f7] transition-colors">
+                    <input 
+                      type="text" 
+                      value={customTimerInput} 
+                      onChange={e => {
+                        const val = e.target.value.replace(/[^0-9]/g, '');
+                        setCustomTimerInput(val);
+                        setTimerDuration(parseInt(val) || 0);
+                      }}
+                      className="bg-transparent text-[10px] text-center w-full outline-none text-white font-semibold"
+                      placeholder="detik"
+                    />
+                    <span className="text-[9px] text-[#555] font-semibold">s</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Shutter Capture Button */}
+              <button 
+                onClick={startCaptureWithTimer}
+                disabled={isCountingDown}
+                className={`h-11 w-11 rounded-full flex items-center justify-center transition-all ${
+                  isCountingDown 
+                    ? 'bg-red-500/20 border-2 border-red-500 cursor-not-allowed scale-95' 
+                    : 'bg-white/10 border-2 border-white hover:bg-white/20 active:scale-95 shadow-[0_4px_12px_rgba(0,0,0,0.3)]'
+                }`}
+                title="Ambil Foto"
+              >
+                <div className={`h-8 w-8 rounded-full flex items-center justify-center shadow-sm transition-all ${isCountingDown ? 'bg-red-500 animate-pulse' : 'bg-white'}`}>
+                  <Camera className={`h-4 w-4 transition-colors ${isCountingDown ? 'text-white' : 'text-black'}`} />
+                </div>
+              </button>
+            </div>
+          )}
         </div>
+      </div>
       </div>
 
       {/* Backdrop for Right Sidebar on Mobile */}
@@ -502,6 +972,43 @@ export default function CameraApp() {
                 <X className="h-3.5 w-3.5" />
               </button>
             </div>
+
+        {/* Section: Presets */}
+        <div className="border-b border-[#111] py-3">
+          <div className="px-4 mb-2 flex items-center justify-between">
+            <span className="text-[11px] font-semibold text-white">Preset Template</span>
+          </div>
+          <div className="px-4 space-y-2">
+            <FigmaSelect 
+              value={designPreset} 
+              onChange={(val) => {
+                setDesignPreset(val);
+                if (val === "retro") {
+                  setFontFamily("system-ui");
+                  setFontWeight("700");
+                  setFillColor("#ff7700");
+                  setHasStroke(true);
+                  setStrokeColor("#000000");
+                } else if (val === "dark_card") {
+                  setFillColor("#ffffff");
+                  setHasStroke(false);
+                } else if (val === "map_card") {
+                  setFillColor("#ffffff");
+                  setHasStroke(false);
+                } else if (val === "standard") {
+                  setFillColor("#000000");
+                  setHasStroke(false);
+                }
+              }}
+              options={[
+                {label: "Standard (Teks Saja)", value: "standard"},
+                {label: "Classic Retro (Kamera Analog)", value: "retro"},
+                {label: "Glassy Dark Card (Latar Belakang)", value: "dark_card"},
+                {label: "GPS Map Card (Visual Lokasi)", value: "map_card"},
+              ]}
+            />
+          </div>
+        </div>
 
         {/* Section: Typography */}
         <div className="border-b border-[#111] py-3">
