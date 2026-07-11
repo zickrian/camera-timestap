@@ -6,7 +6,7 @@ import {
   Type, AlignLeft, AlignCenter, AlignRight, 
   Image as ImageIcon, Camera, Trash2,
   AlignVerticalJustifyStart, AlignVerticalJustifyEnd, AlignVerticalJustifyCenter,
-  ChevronDown
+  ChevronDown, Menu, SlidersHorizontal, X
 } from "lucide-react";
 
 // Figma-styled tiny components
@@ -51,6 +51,10 @@ export default function CameraApp() {
   const [exportQuality, setExportQuality] = useState("MAX");
   const [exportSaveSettings, setExportSaveSettings] = useState(true);
   const [activeLayer, setActiveLayer] = useState<string>("camera"); // "camera" or photo id
+
+  // Mobile responsiveness sidebar states
+  const [showLeftSidebar, setShowLeftSidebar] = useState(false);
+  const [showRightSidebar, setShowRightSidebar] = useState(false);
 
   // Camera State
   const [cameraActive, setCameraActive] = useState(false);
@@ -260,19 +264,37 @@ export default function CameraApp() {
   const activePhotoObj = photos.find(p => p.id === activeLayer);
 
   return (
-    <div className="flex h-screen w-full bg-[#1e1e1e] text-[#d4d4d4] overflow-hidden select-none">
+    <div className="flex h-screen w-full bg-[#1e1e1e] text-[#d4d4d4] overflow-hidden select-none relative">
       
+      {/* Backdrop for Left Sidebar on Mobile */}
+      {showLeftSidebar && (
+        <div 
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs z-20 md:hidden" 
+          onClick={() => setShowLeftSidebar(false)}
+        />
+      )}
+
       {/* LEFT PANEL: Figma Layers */}
-      <div className="w-60 bg-[#2c2c2c] border-r border-[#111] flex flex-col shrink-0 shadow-lg z-20">
-        <div className="h-10 flex items-center px-4 border-b border-[#111] bg-[#2c2c2c] sticky top-0">
+      <div className={`fixed md:relative inset-y-0 left-0 w-60 bg-[#2c2c2c] border-r border-[#111] flex flex-col shrink-0 shadow-lg z-30 transition-transform duration-300 md:translate-x-0 ${showLeftSidebar ? "translate-x-0" : "-translate-x-full"}`}>
+        <div className="h-10 flex items-center justify-between px-4 border-b border-[#111] bg-[#2c2c2c] sticky top-0">
           <span className="text-[11px] font-semibold tracking-wide text-white">Layers</span>
+          <button 
+            onClick={() => setShowLeftSidebar(false)} 
+            className="md:hidden p-1 text-[#888] hover:text-white transition-colors"
+            title="Tutup Layers"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
         </div>
         
         <div className="flex-1 overflow-y-auto py-2">
           {/* Active Camera Layer */}
           <div 
             className={`px-4 py-2 mt-1 flex items-center gap-2 cursor-pointer text-sm font-medium transition-colors ${activeLayer === "camera" ? "bg-[#383838] text-white" : "text-[#d4d4d4] hover:bg-[#333]"}`}
-            onClick={() => setActiveLayer("camera")}
+            onClick={() => {
+              setActiveLayer("camera");
+              setShowLeftSidebar(false);
+            }}
           >
             <Camera className="h-3.5 w-3.5 shrink-0" />
             <span className="text-[12px] font-medium truncate">Live Camera</span>
@@ -286,7 +308,10 @@ export default function CameraApp() {
           {photos.map(p => (
             <div 
               key={p.id}
-              onClick={() => setActiveLayer(p.id)}
+              onClick={() => {
+                setActiveLayer(p.id);
+                setShowLeftSidebar(false);
+              }}
               className={`px-4 py-1.5 flex items-center gap-2 cursor-pointer text-sm group transition-colors ${
                 activeLayer === p.id 
                   ? "bg-[#383838] text-white" 
@@ -314,36 +339,72 @@ export default function CameraApp() {
       {/* CENTER PANEL: Canvas Area */}
       <div className="flex-1 bg-[#1e1e1e] flex flex-col relative overflow-hidden">
         {/* Top Toolbar */}
-        <div className="h-10 border-b border-[#111] flex items-center justify-center gap-2 bg-[#2c2c2c]">
-          {activeLayer === "camera" && cameraActive ? (
-             <span className="text-[11px] font-medium text-[#888]">Mode Kamera Aktif - Tekan tombol bulat di bawah layar untuk memotret</span>
-          ) : activePhotoObj ? (
-             <span className="text-[11px] font-medium text-[#888]">Preview Mode: {activePhotoObj.name}</span>
-          ) : null}
+        <div className="h-10 border-b border-[#111] flex items-center justify-between px-3 bg-[#2c2c2c] shrink-0">
+          {/* Left Menu Button for Mobile */}
+          <button 
+            onClick={() => {
+              setShowLeftSidebar(true);
+              setShowRightSidebar(false);
+            }} 
+            className="md:hidden p-1.5 rounded-[3px] text-[#888] hover:text-[#ccc] hover:bg-[#2a2a2a] transition-colors flex items-center gap-1"
+            title="Tampilkan Layers"
+          >
+            <Menu className="h-4 w-4" />
+            <span className="text-[10px] font-medium">Layers</span>
+          </button>
+          <div className="hidden md:block w-16" />
+
+          {/* Center Info Text */}
+          <div className="flex-1 text-center truncate px-2">
+            {activeLayer === "camera" && cameraActive ? (
+               <span className="text-[11px] font-medium text-[#888] hidden sm:inline">Mode Kamera Aktif - Tekan tombol bulat di bawah layar untuk memotret</span>
+            ) : activePhotoObj ? (
+               <span className="text-[11px] font-medium text-[#888] hidden sm:inline">Preview Mode: {activePhotoObj.name}</span>
+            ) : null}
+            {activeLayer === "camera" && cameraActive ? (
+               <span className="text-[11px] font-medium text-[#888] sm:hidden">Mode Kamera Aktif</span>
+            ) : activePhotoObj ? (
+               <span className="text-[11px] font-medium text-[#888] sm:hidden">Preview: {activePhotoObj.name}</span>
+            ) : null}
+          </div>
+
+          {/* Right Properties Button for Mobile */}
+          <button 
+            onClick={() => {
+              setShowRightSidebar(true);
+              setShowLeftSidebar(false);
+            }} 
+            className="md:hidden p-1.5 rounded-[3px] text-[#888] hover:text-[#ccc] hover:bg-[#2a2a2a] transition-colors flex items-center gap-1"
+            title={activeLayer === "camera" ? "Tampilkan Design" : "Tampilkan Export"}
+          >
+            <span className="text-[10px] font-medium">{activeLayer === "camera" ? "Design" : "Export"}</span>
+            <SlidersHorizontal className="h-4 w-4" />
+          </button>
+          <div className="hidden md:block w-16" />
         </div>
 
         {/* Canvas Workspace */}
-        <div className="flex-1 overflow-auto flex items-center justify-center p-8 bg-[#1e1e1e]">
-          <div className="relative shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_10px_30px_rgba(0,0,0,0.5)] bg-black" style={{ maxHeight: '100%', maxWidth: '100%' }}>
+        <div className="flex-1 overflow-auto flex items-center justify-center p-2 sm:p-4 md:p-8 bg-[#1e1e1e]">
+          <div className="relative shadow-[0_0_0_1px_rgba(255,255,255,0.05),0_10px_30px_rgba(0,0,0,0.5)] bg-black w-fit mx-auto" style={{ maxHeight: '100%', maxWidth: '100%' }}>
             
             {/* The Live Camera Area (Always mounted so stream doesn't break) */}
-            <div className={activeLayer === "camera" ? "block relative" : "hidden"}>
+            <div className={activeLayer === "camera" ? "relative w-fit mx-auto" : "hidden"}>
                 
                 {/* Manual Permission Screen */}
                 {!cameraActive && !cameraError && (
-                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm z-20">
-                     <div className="flex flex-col items-center bg-[#2c2c2c] p-8 rounded-[6px] border border-[#383838] shadow-2xl">
+                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm z-20 p-4">
+                     <div className="flex flex-col items-center bg-[#2c2c2c] p-6 sm:p-8 rounded-[6px] border border-[#383838] shadow-2xl w-full max-w-[320px]">
                        <Camera className="h-10 w-10 text-[#888] mb-4" />
                        <p className="text-white text-sm font-medium mb-1">Akses Diperlukan</p>
-                       <p className="text-[#888] text-[11px] mb-6 text-center max-w-[250px] leading-relaxed">Aplikasi ini membutuhkan akses Kamera dan Lokasi (GPS) untuk berfungsi dengan baik.</p>
-                       <button onClick={startCamera} className="px-6 py-2 bg-[#0f8bfd] hover:bg-[#0d7be0] rounded-[3px] text-xs font-medium text-white transition-colors shadow-lg">
+                       <p className="text-[#888] text-[11px] mb-6 text-center leading-relaxed">Aplikasi ini membutuhkan akses Kamera dan Lokasi (GPS) untuk berfungsi dengan baik.</p>
+                       <button onClick={startCamera} className="px-6 py-2 bg-[#0f8bfd] hover:bg-[#0d7be0] rounded-[3px] text-xs font-medium text-white transition-colors shadow-lg w-full">
                          Izinkan Akses
                        </button>
                      </div>
                    </div>
                 )}
-
-                <video ref={videoRef} autoPlay playsInline className={`max-h-[75vh] w-auto block transform scale-x-[-1] ${!cameraActive ? 'opacity-0' : 'opacity-100'}`} />
+ 
+                <video ref={videoRef} autoPlay playsInline className={`max-h-[70vh] md:max-h-[75vh] w-auto max-w-full block transform scale-x-[-1] ${!cameraActive ? 'opacity-0' : 'opacity-100'}`} />
                 <canvas ref={canvasRef} className="hidden" />
                 
                 {/* Live Watermark HTML Overlay using calculated videoScale */}
@@ -382,7 +443,7 @@ export default function CameraApp() {
 
                 {/* Floating Capture Shutter Button */}
                 {cameraActive && (
-                  <div className="absolute bottom-0 left-1/2 transform -translate-x-1/2 translate-y-1/2 z-30">
+                  <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-20">
                     <button 
                       onClick={capturePhoto} 
                       className="h-14 w-14 rounded-full bg-white/30 border-[3px] border-white flex items-center justify-center hover:bg-white/50 active:scale-90 transition-all shadow-[0_4px_20px_rgba(0,0,0,0.5)]"
@@ -395,10 +456,10 @@ export default function CameraApp() {
                   </div>
                 )}
             </div>
-
+ 
             {/* Photo Preview Area */}
             {activeLayer !== "camera" && activePhotoObj && (
-              <img src={activePhotoObj.url} alt="Preview" className="max-h-[75vh] w-auto block" />
+              <img src={activePhotoObj.url} alt="Preview" className="max-h-[70vh] md:max-h-[75vh] w-auto max-w-full block" />
             )}
 
             {activeLayer !== "camera" && !activePhotoObj && (
@@ -419,12 +480,27 @@ export default function CameraApp() {
         </div>
       </div>
 
+      {/* Backdrop for Right Sidebar on Mobile */}
+      {showRightSidebar && (
+        <div 
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs z-20 md:hidden" 
+          onClick={() => setShowRightSidebar(false)}
+        />
+      )}
+
       {/* RIGHT PANEL: Figma Properties & Canva Export */}
-      <div className="w-[240px] bg-[#2c2c2c] border-l border-[#111] flex flex-col shrink-0 shadow-lg z-20 overflow-y-auto">
+      <div className={`fixed md:relative inset-y-0 right-0 w-[240px] bg-[#2c2c2c] border-l border-[#111] flex flex-col shrink-0 shadow-lg z-30 overflow-y-auto transition-transform duration-300 md:translate-x-0 ${showRightSidebar ? "translate-x-0" : "translate-x-full"}`}>
         {activeLayer === "camera" ? (
           <>
-            <div className="h-10 flex items-center px-4 border-b border-[#111] shrink-0">
+            <div className="h-10 flex items-center justify-between px-4 border-b border-[#111] shrink-0">
               <span className="text-[11px] font-semibold text-white">Design</span>
+              <button 
+                onClick={() => setShowRightSidebar(false)} 
+                className="md:hidden p-1 text-[#888] hover:text-white transition-colors"
+                title="Tutup Design"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
             </div>
 
         {/* Section: Typography */}
@@ -552,8 +628,15 @@ export default function CameraApp() {
         </>
         ) : activePhotoObj ? (
           <>
-            <div className="h-10 flex items-center px-4 border-b border-[#111] shrink-0">
+            <div className="h-10 flex items-center justify-between px-4 border-b border-[#111] shrink-0">
               <span className="text-[11px] font-semibold text-white">Export setting</span>
+              <button 
+                onClick={() => setShowRightSidebar(false)} 
+                className="md:hidden p-1 text-[#888] hover:text-white transition-colors"
+                title="Tutup Export"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
             </div>
             
             <div className="p-4 flex flex-col gap-6 flex-1">
