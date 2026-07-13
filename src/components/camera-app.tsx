@@ -45,6 +45,55 @@ const FigmaIconButton = ({ icon: Icon, active, onClick }: {icon: React.ElementTy
   </button>
 );
 
+const FILTER_PRESETS: { label: string; value: string; css: string }[] = [
+  { label: "None", value: "none", css: "none" },
+  { label: "B&W", value: "bw", css: "grayscale(1) contrast(1.1)" },
+  { label: "Sepia", value: "sepia", css: "sepia(0.8) contrast(1.05) brightness(1.05)" },
+  { label: "Vintage", value: "vintage", css: "sepia(0.35) contrast(0.9) brightness(1.05) saturate(1.2)" },
+  { label: "Vivid", value: "vivid", css: "contrast(1.15) saturate(1.4)" },
+];
+
+const PHOTOS_STORAGE_KEY = "camera-app:photos";
+const SETTINGS_STORAGE_KEY = "camera-app:settings";
+const MAX_STORED_PHOTOS = 12;
+
+// Shared GPS map card dimensions (base/1x units) — kept identical between the
+// live DOM preview and the canvas burn-in so they never drift out of sync.
+const MAP_CARD_W = 150;
+const MAP_CARD_H = 104;
+
+type StoredPhoto = { id: string; url: string; name: string };
+type StoredSettings = Record<string, string | boolean | undefined>;
+
+// Parsed once per page load and cached, so each useState lazy initializer
+// below doesn't re-read/re-parse localStorage on every field.
+let cachedStoredSettings: StoredSettings | null = null;
+
+const loadStoredPhotos = (): StoredPhoto[] => {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(PHOTOS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const loadStoredSettings = (): StoredSettings => {
+  if (cachedStoredSettings) return cachedStoredSettings;
+  if (typeof window === "undefined") return {};
+  let result: StoredSettings = {};
+  try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    result = raw ? JSON.parse(raw) : {};
+  } catch {
+    result = {};
+  }
+  cachedStoredSettings = result;
+  return result;
+};
+
 const drawRoundedRect = (ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) => {
   ctx.beginPath();
   ctx.moveTo(x + radius, y);
@@ -60,14 +109,14 @@ const drawRoundedRect = (ctx: CanvasRenderingContext2D, x: number, y: number, wi
 };
 
 export default function CameraApp() {
-  // Layers / Photos Cache
-  const [photos, setPhotos] = useState<{id: string, url: string, name: string}[]>([]);
+  // Layers / Photos Cache (lazily hydrated from localStorage on first render)
+  const [photos, setPhotos] = useState<StoredPhoto[]>(loadStoredPhotos);
   const [exportQuality, setExportQuality] = useState("MAX");
   const [exportSaveSettings, setExportSaveSettings] = useState(true);
   const [activeLayer, setActiveLayer] = useState<string>("camera"); // "camera" or photo id
-  
+
   // Design presets and map coordinates states
-  const [designPreset, setDesignPreset] = useState("standard");
+  const [designPreset, setDesignPreset] = useState(() => (loadStoredSettings().designPreset as string) || "standard");
   const [latLng, setLatLng] = useState<{lat: number, lng: number} | null>(null);
   const [mapDataUrl, setMapDataUrl] = useState<string>("");
 
@@ -96,24 +145,60 @@ export default function CameraApp() {
   const [videoScale, setVideoScale] = useState(1);
   const resizeObserver = useRef<ResizeObserver | null>(null);
 
-  // Settings State
-  const [fontFamily, setFontFamily] = useState("Inter");
-  const [fontWeight, setFontWeight] = useState("400");
-  const [fontSize, setFontSize] = useState("32"); 
-  const [alignX, setAlignX] = useState<"left" | "center" | "right">("right");
-  const [alignY, setAlignY] = useState<"top" | "center" | "bottom">("bottom");
-  
-  const [fillColor, setFillColor] = useState("#000000");
-  const [strokeColor, setStrokeColor] = useState("#000000");
-  const [hasStroke, setHasStroke] = useState(false);
-  
-  const [template, setTemplate] = useState("standard");
+  // Settings State (lazily hydrated from localStorage on first render)
+  const [fontFamily, setFontFamily] = useState(() => (loadStoredSettings().fontFamily as string) || "Inter");
+  const [fontWeight, setFontWeight] = useState(() => (loadStoredSettings().fontWeight as string) || "400");
+  const [fontSize, setFontSize] = useState(() => (loadStoredSettings().fontSize as string) || "32");
+  const [alignX, setAlignX] = useState<"left" | "center" | "right">(() => (loadStoredSettings().alignX as "left" | "center" | "right") || "right");
+  const [alignY, setAlignY] = useState<"top" | "center" | "bottom">(() => (loadStoredSettings().alignY as "top" | "center" | "bottom") || "bottom");
+
+  const [fillColor, setFillColor] = useState(() => (loadStoredSettings().fillColor as string) || "#000000");
+  const [strokeColor, setStrokeColor] = useState(() => (loadStoredSettings().strokeColor as string) || "#000000");
+  const [hasStroke, setHasStroke] = useState(() => Boolean(loadStoredSettings().hasStroke));
+
+  const [template, setTemplate] = useState(() => (loadStoredSettings().template as string) || "standard");
   const [manualLocation, setManualLocation] = useState("");
-  
+  const [colorFilter, setColorFilter] = useState(() => (loadStoredSettings().colorFilter as string) || "none");
+
+  // Manual date/time override
+  const [useManualDateTime, setUseManualDateTime] = useState(false);
+  const [manualDateTime, setManualDateTime] = useState("");
+
   // Data
   const [liveTime, setLiveTime] = useState(new Date());
   const [gpsAddress, setGpsAddress] = useState("");
 
+  // Persist photo history to localStorage whenever it changes (capped, with quota fallback)
+  useEffect(() => {
+    const capped = photos.slice(0, MAX_STORED_PHOTOS);
+    let toStore = capped;
+    while (toStore.length > 0) {
+      try {
+        localStorage.setItem(PHOTOS_STORAGE_KEY, JSON.stringify(toStore));
+        return;
+      } catch {
+        // Quota exceeded — drop the oldest photo and retry
+        toStore = toStore.slice(0, -1);
+      }
+    }
+    try {
+      localStorage.removeItem(PHOTOS_STORAGE_KEY);
+    } catch {
+      // Ignore — nothing more we can do
+    }
+  }, [photos]);
+
+  // Persist design settings to localStorage whenever they change
+  useEffect(() => {
+    try {
+      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({
+        designPreset, fontFamily, fontWeight, fontSize, alignX, alignY,
+        fillColor, strokeColor, hasStroke, template, colorFilter,
+      }));
+    } catch {
+      // Storage unavailable/full — settings just won't persist this session
+    }
+  }, [designPreset, fontFamily, fontWeight, fontSize, alignX, alignY, fillColor, strokeColor, hasStroke, template, colorFilter]);
 
   // Time ticker
   useEffect(() => {
@@ -168,30 +253,32 @@ export default function CameraApp() {
     const renderMap = async () => {
       try {
         const { lat, lng } = latLng;
-        const zoom = 15;
+        const zoom = 17;
         const scale = Math.pow(2, zoom);
-        
+        const tileSize = 256;
+        const dpr = 2; // fetch @2x retina tiles for a sharper map at small display sizes
+
         // Calculate fractional tile coordinates
         const tileX = (lng + 180) / 360 * scale;
         const latRad = lat * Math.PI / 180;
         const tileY = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * scale;
-        
-        // Canvas size
-        const w = 160;
-        const h = 100;
-        
+
+        // Canvas size (rendered at 2x, downscaled visually by the display size)
+        const w = MAP_CARD_W * dpr;
+        const h = MAP_CARD_H * dpr;
+
         const canvas = document.createElement("canvas");
         canvas.width = w;
         canvas.height = h;
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
-        
-        // Find surrounding tiles to fetch (usually a 2x2 grid)
-        const minX = Math.floor(tileX - (w / 2) / 256);
-        const maxX = Math.floor(tileX + (w / 2) / 256);
-        const minY = Math.floor(tileY - (h / 2) / 256);
-        const maxY = Math.floor(tileY + (h / 2) / 256);
-        
+
+        // Find surrounding tiles to fetch (usually a 2x2 or 3x3 grid)
+        const minX = Math.floor(tileX - (w / 2) / tileSize);
+        const maxX = Math.floor(tileX + (w / 2) / tileSize);
+        const minY = Math.floor(tileY - (h / 2) / tileSize);
+        const maxY = Math.floor(tileY + (h / 2) / tileSize);
+
         const loadImage = (url: string) => {
           return new Promise<HTMLImageElement | null>((resolve) => {
             const img = new Image();
@@ -205,33 +292,44 @@ export default function CameraApp() {
         const tilePromises = [];
         for (let x = minX; x <= maxX; x++) {
           for (let y = minY; y <= maxY; y++) {
-            const url = `https://a.basemaps.cartocdn.com/dark_all/${zoom}/${x}/${y}.png`;
+            const url = `https://a.basemaps.cartocdn.com/dark_all/${zoom}/${x}/${y}@2x.png`;
             tilePromises.push(loadImage(url).then(img => ({ img, x, y })));
           }
         }
-        
+
         const loadedTiles = await Promise.all(tilePromises);
         if (!isMounted) return;
-        
+
         ctx.fillStyle = "#121212";
         ctx.fillRect(0, 0, w, h);
-        
+
         loadedTiles.forEach(({ img, x, y }) => {
           if (!img) return;
-          const dx = (x - tileX) * 256;
-          const dy = (y - tileY) * 256;
-          ctx.drawImage(img, (w / 2) + dx, (h / 2) + dy);
+          const dx = (x - tileX) * tileSize;
+          const dy = (y - tileY) * tileSize;
+          ctx.drawImage(img, (w / 2) + dx, (h / 2) + dy, tileSize, tileSize);
         });
-        
-        // Draw a small blue accent marker at the center
+
+        // Draw a polished "you are here" pin: soft glow ring + solid dot + white ring
+        const cx = w / 2;
+        const cy = h / 2;
+
+        const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, 14 * dpr);
+        glow.addColorStop(0, "rgba(15, 139, 253, 0.45)");
+        glow.addColorStop(1, "rgba(15, 139, 253, 0)");
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 14 * dpr, 0, 2 * Math.PI);
+        ctx.fill();
+
         ctx.fillStyle = "#0f8bfd";
         ctx.beginPath();
-        ctx.arc(w / 2, h / 2, 4, 0, 2 * Math.PI);
+        ctx.arc(cx, cy, 5 * dpr, 0, 2 * Math.PI);
         ctx.fill();
         ctx.strokeStyle = "#ffffff";
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 2 * dpr;
         ctx.stroke();
-        
+
         setMapDataUrl(canvas.toDataURL());
       } catch (err) {
         console.error("Map render error:", err);
@@ -302,8 +400,16 @@ export default function CameraApp() {
     return lines;
   };
 
+  const getDisplayTime = () => {
+    if (useManualDateTime && manualDateTime) {
+      const parsed = new Date(manualDateTime);
+      if (!isNaN(parsed.getTime())) return parsed;
+    }
+    return liveTime;
+  };
+
   const getWatermarkLines = () => {
-    const timeStr = liveTime.toLocaleString("en-GB");
+    const timeStr = getDisplayTime().toLocaleString("en-GB");
     const locStr = manualLocation || gpsAddress || "Mencari Lokasi GPS...";
     
     const wrappedLoc = wrapText(locStr, 35);
@@ -325,8 +431,9 @@ export default function CameraApp() {
     canvas.width = width;
     canvas.height = height;
 
-    // Draw video frame mirrored to match preview
+    // Draw video frame mirrored to match preview, applying the active color filter
     ctx.save();
+    ctx.filter = FILTER_PRESETS.find(f => f.value === colorFilter)?.css || "none";
     ctx.translate(width, 0);
     ctx.scale(-1, 1);
     ctx.drawImage(video, 0, 0, width, height);
@@ -422,12 +529,13 @@ export default function CameraApp() {
     } else if (designPreset === "map_card") {
       // GPS Map Card Layout
       const scaleFactor = size / 32;
-      const cardWidth = 420 * scaleFactor;
-      const cardHeight = 120 * scaleFactor;
       const cardPadding = 16 * scaleFactor;
-      const mapW = 120 * scaleFactor;
-      const mapH = 88 * scaleFactor;
+      const mapW = MAP_CARD_W * scaleFactor;
+      const mapH = MAP_CARD_H * scaleFactor;
       const gap = 16 * scaleFactor;
+      const textAreaWidth = 260 * scaleFactor;
+      const cardWidth = cardPadding * 2 + mapW + gap + textAreaWidth;
+      const cardHeight = cardPadding * 2 + mapH;
 
       // Calculate position
       let cardX = padding;
@@ -461,9 +569,9 @@ export default function CameraApp() {
       // Clip map area
       ctx.beginPath();
       if ('roundRect' in ctx && typeof ctxWithRoundRect.roundRect === 'function') {
-        ctxWithRoundRect.roundRect(mapX, mapY, mapW, mapH, 4 * scaleFactor);
+        ctxWithRoundRect.roundRect(mapX, mapY, mapW, mapH, 6 * scaleFactor);
       } else {
-        drawRoundedRect(ctx, mapX, mapY, mapW, mapH, 4 * scaleFactor);
+        drawRoundedRect(ctx, mapX, mapY, mapW, mapH, 6 * scaleFactor);
       }
       ctx.clip();
 
@@ -493,9 +601,9 @@ export default function CameraApp() {
       ctx.lineWidth = 1;
       ctx.beginPath();
       if ('roundRect' in ctx && typeof ctxWithRoundRect.roundRect === 'function') {
-        ctxWithRoundRect.roundRect(mapX, mapY, mapW, mapH, 4 * scaleFactor);
+        ctxWithRoundRect.roundRect(mapX, mapY, mapW, mapH, 6 * scaleFactor);
       } else {
-        drawRoundedRect(ctx, mapX, mapY, mapW, mapH, 4 * scaleFactor);
+        drawRoundedRect(ctx, mapX, mapY, mapW, mapH, 6 * scaleFactor);
       }
       ctx.stroke();
 
@@ -503,26 +611,107 @@ export default function CameraApp() {
       const textX = mapX + mapW + gap;
       ctx.textAlign = "left";
 
-      // 1. Address (Wrapped)
-      ctx.font = `500 ${12 * scaleFactor}px ${fontFamily}, sans-serif`;
-      ctx.fillStyle = "#e0e0e0";
+      // 1. Address (Wrapped, truncated with ellipsis beyond 2 lines)
+      ctx.font = `500 ${13 * scaleFactor}px ${fontFamily}, sans-serif`;
+      ctx.fillStyle = "#f0f0f0";
       const locStr = manualLocation || gpsAddress || "Mencari Lokasi GPS...";
-      // Wrap location string to fit card
-      const maxChars = 26;
+      // Wrap location string to fit the wider card
+      const maxChars = 34;
       const wrappedLoc = wrapText(locStr, maxChars);
-      
-      let currentY = mapY + 16 * scaleFactor;
-      wrappedLoc.slice(0, 2).forEach((line) => {
-        ctx.fillText(line, textX, currentY);
-        currentY += 14 * scaleFactor;
+
+      let currentY = mapY + 18 * scaleFactor;
+      wrappedLoc.slice(0, 2).forEach((line, i) => {
+        const isLastVisibleLine = i === 1 && wrappedLoc.length > 2;
+        ctx.fillText(isLastVisibleLine ? `${line.trimEnd()}…` : line, textX, currentY);
+        currentY += 16 * scaleFactor;
       });
 
       // 2. Timestamp
       ctx.font = `normal ${10 * scaleFactor}px monospace, sans-serif`;
       ctx.fillStyle = "#888888";
       
-      const timeY = mapY + 80 * scaleFactor;
-      ctx.fillText(liveTime.toLocaleString("en-GB"), textX, timeY);
+      const timeY = mapY + mapH - 8 * scaleFactor;
+      ctx.fillText(getDisplayTime().toLocaleString("en-GB"), textX, timeY);
+    } else if (designPreset === "minimal_badge") {
+      // Minimal pill badge showing just the time
+      const scaleFactor = size / 32;
+      const badgeText = getDisplayTime().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+      ctx.font = `600 ${13 * scaleFactor}px ${fontFamily}, sans-serif`;
+      const textW = ctx.measureText(badgeText).width;
+
+      const dotR = 3 * scaleFactor;
+      const badgePaddingX = 14 * scaleFactor;
+      const gapDot = 8 * scaleFactor;
+      const badgeHeight = 30 * scaleFactor;
+      const badgeWidth = badgePaddingX * 2 + dotR * 2 + gapDot + textW;
+
+      let badgeX = padding;
+      if (alignX === "center") badgeX = (width - badgeWidth) / 2;
+      if (alignX === "right") badgeX = width - padding - badgeWidth;
+
+      let badgeY = padding;
+      if (alignY === "center") badgeY = (height - badgeHeight) / 2;
+      if (alignY === "bottom") badgeY = height - padding - badgeHeight;
+
+      ctx.fillStyle = "rgba(15, 15, 15, 0.6)";
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
+      ctx.lineWidth = Math.max(1, scaleFactor);
+      ctx.beginPath();
+      if ('roundRect' in ctx && typeof ctxWithRoundRect.roundRect === 'function') {
+        ctxWithRoundRect.roundRect(badgeX, badgeY, badgeWidth, badgeHeight, badgeHeight / 2);
+      } else {
+        drawRoundedRect(ctx, badgeX, badgeY, badgeWidth, badgeHeight, badgeHeight / 2);
+      }
+      ctx.fill();
+      ctx.stroke();
+
+      const dotCx = badgeX + badgePaddingX + dotR;
+      const dotCy = badgeY + badgeHeight / 2;
+      ctx.fillStyle = "#22c55e";
+      ctx.beginPath();
+      ctx.arc(dotCx, dotCy, dotR, 0, 2 * Math.PI);
+      ctx.fill();
+
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = fillColor;
+      ctx.fillText(badgeText, dotCx + dotR + gapDot, dotCy);
+      ctx.textBaseline = "alphabetic";
+    } else if (designPreset === "film_strip") {
+      // Full-width film-reel style bar with sprocket holes and a date stamp
+      const scaleFactor = size / 32;
+      const barHeight = 44 * scaleFactor;
+      const holeSize = 10 * scaleFactor;
+      const holeGap = 22 * scaleFactor;
+
+      const barY = alignY === "top" ? 0 : height - barHeight;
+
+      ctx.fillStyle = "rgba(10, 10, 10, 0.75)";
+      ctx.fillRect(0, barY, width, barHeight);
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+      const holeY = barY + barHeight / 2 - holeSize / 2;
+      for (let x = holeGap / 2; x < width; x += holeGap) {
+        if ('roundRect' in ctx && typeof ctxWithRoundRect.roundRect === 'function') {
+          ctx.beginPath();
+          ctxWithRoundRect.roundRect(x, holeY, holeSize, holeSize, 2 * scaleFactor);
+          ctx.fill();
+        } else {
+          ctx.beginPath();
+          drawRoundedRect(ctx, x, holeY, holeSize, holeSize, 2 * scaleFactor);
+          ctx.fill();
+        }
+      }
+
+      ctx.font = `600 ${14 * scaleFactor}px monospace, sans-serif`;
+      ctx.fillStyle = "#ff7700";
+      ctx.textAlign = alignX === "left" ? "left" : (alignX === "right" ? "right" : "center");
+      ctx.textBaseline = "middle";
+      const textX2 = alignX === "left" ? padding : (alignX === "right" ? width - padding : width / 2);
+      const locStr = manualLocation || gpsAddress || "";
+      const badgeLine = template === "location_only" ? locStr : getDisplayTime().toLocaleString("en-GB");
+      ctx.fillText(badgeLine, textX2, barY + barHeight / 2);
+      ctx.textBaseline = "alphabetic";
     }
 
     const dataUrl = canvas.toDataURL("image/jpeg", 0.95);
@@ -732,7 +921,13 @@ export default function CameraApp() {
                    </div>
                 )}
  
-                <video ref={videoRef} autoPlay playsInline className={`max-h-[70vh] md:max-h-[75vh] w-auto max-w-full block transform scale-x-[-1] ${!cameraActive ? 'hidden' : 'opacity-100'}`} />
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  className={`max-h-[70vh] md:max-h-[75vh] w-auto max-w-full block transform scale-x-[-1] ${!cameraActive ? 'hidden' : 'opacity-100'}`}
+                  style={{ filter: FILTER_PRESETS.find(f => f.value === colorFilter)?.css || "none" }}
+                />
                 <canvas ref={canvasRef} className="hidden" />
                 
                 {/* Live Watermark HTML Overlay using calculated videoScale */}
@@ -760,11 +955,11 @@ export default function CameraApp() {
                       }}
                     >
                       {/* Left side: Map */}
-                      <div 
-                        className="shrink-0 rounded-[4px] overflow-hidden border border-[#ffffff10] bg-[#121212] flex items-center justify-center relative"
+                      <div
+                        className="shrink-0 rounded-[6px] overflow-hidden border border-[rgba(255,255,255,0.18)] bg-[#121212] flex items-center justify-center relative shadow-[inset_0_0_0_1px_rgba(0,0,0,0.25)]"
                         style={{
-                          width: `${120 * videoScale}px`,
-                          height: `${80 * videoScale}px`,
+                          width: `${MAP_CARD_W * videoScale}px`,
+                          height: `${MAP_CARD_H * videoScale}px`,
                         }}
                       >
                         {mapDataUrl ? (
@@ -778,12 +973,15 @@ export default function CameraApp() {
                       </div>
 
                       {/* Right side: Info */}
-                      <div className="flex flex-col justify-between" style={{ height: `${80 * videoScale}px` }}>
+                      <div className="flex flex-col justify-between" style={{ height: `${MAP_CARD_H * videoScale}px`, width: `${260 * videoScale}px` }}>
                         {/* Address */}
-                        <div 
-                          className="text-[#e0e0e0] font-medium leading-tight max-w-[200px]"
-                          style={{ 
-                            fontSize: `${11 * videoScale}px`
+                        <div
+                          className="text-[#f0f0f0] font-medium leading-tight overflow-hidden"
+                          style={{
+                            fontSize: `${13 * videoScale}px`,
+                            display: "-webkit-box",
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: "vertical",
                           }}
                         >
                           {manualLocation || gpsAddress || "Mencari Lokasi GPS..."}
@@ -792,7 +990,7 @@ export default function CameraApp() {
                         <div className="flex flex-col font-mono text-[#888]">
                           {/* Time */}
                           <span style={{ fontSize: `${10 * videoScale}px` }}>
-                            {liveTime.toLocaleString("en-GB")}
+                            {getDisplayTime().toLocaleString("en-GB")}
                           </span>
                         </div>
                       </div>
@@ -823,8 +1021,49 @@ export default function CameraApp() {
                         <div key={idx}>{line}</div>
                       ))}
                     </div>
+                  ) : designPreset === "minimal_badge" ? (
+                    <div
+                      className="absolute flex items-center pointer-events-none bg-[rgba(15,15,15,0.6)] border border-[rgba(255,255,255,0.18)] rounded-full shadow-[0_8px_32px_rgba(0,0,0,0.37)] backdrop-blur-md"
+                      style={{
+                        padding: `${8 * videoScale}px ${14 * videoScale}px`,
+                        gap: `${8 * videoScale}px`,
+                        fontFamily: fontFamily,
+
+                        top: alignY === "top" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : (alignY === "center" ? "50%" : "auto"),
+                        bottom: alignY === "bottom" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : "auto",
+                        transform: alignY === "center" ? "translateY(-50%)" : "none",
+
+                        left: alignX === "left" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : (alignX === "center" ? "50%" : "auto"),
+                        right: alignX === "right" ? `${(parseInt(fontSize) * 1.5) * videoScale}px` : "auto",
+                        ...(alignX === "center" ? { transform: `${alignY === "center" ? "translate(-50%, -50%)" : "translateX(-50%)"}` } : {}),
+                      }}
+                    >
+                      <span className="rounded-full bg-[#22c55e] shrink-0" style={{ width: `${6 * videoScale}px`, height: `${6 * videoScale}px` }} />
+                      <span style={{ fontSize: `${13 * videoScale}px`, fontWeight: 600, color: fillColor }}>
+                        {getDisplayTime().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    </div>
+                  ) : designPreset === "film_strip" ? (
+                    <div
+                      className="absolute inset-x-0 flex items-center pointer-events-none bg-[rgba(10,10,10,0.75)]"
+                      style={{
+                        height: `${44 * videoScale}px`,
+                        top: alignY === "top" ? 0 : "auto",
+                        bottom: alignY !== "top" ? 0 : "auto",
+                        backgroundImage: `repeating-linear-gradient(to right, rgba(255,255,255,0.35) 0, rgba(255,255,255,0.35) ${10 * videoScale}px, transparent ${10 * videoScale}px, transparent ${32 * videoScale}px)`,
+                        backgroundPosition: `${11 * videoScale}px center`,
+                        backgroundRepeat: "no-repeat",
+                        backgroundSize: `calc(100% - ${22 * videoScale}px) ${10 * videoScale}px`,
+                        justifyContent: alignX === "left" ? "flex-start" : (alignX === "right" ? "flex-end" : "center"),
+                        padding: `0 ${(parseInt(fontSize) * 1.5) * videoScale}px`,
+                      }}
+                    >
+                      <span className="font-mono font-semibold text-[#ff7700]" style={{ fontSize: `${14 * videoScale}px` }}>
+                        {template === "location_only" ? (manualLocation || gpsAddress || "") : getDisplayTime().toLocaleString("en-GB")}
+                      </span>
+                    </div>
                   ) : (
-                    <div 
+                    <div
                       className="absolute flex flex-col pointer-events-none"
                       style={{
                         fontFamily: fontFamily,
@@ -998,6 +1237,12 @@ export default function CameraApp() {
                 } else if (val === "standard") {
                   setFillColor("#000000");
                   setHasStroke(false);
+                } else if (val === "minimal_badge") {
+                  setFillColor("#ffffff");
+                  setHasStroke(false);
+                } else if (val === "film_strip") {
+                  setFillColor("#ff7700");
+                  setHasStroke(false);
                 }
               }}
               options={[
@@ -1005,7 +1250,23 @@ export default function CameraApp() {
                 {label: "Classic Retro (Kamera Analog)", value: "retro"},
                 {label: "Glassy Dark Card (Latar Belakang)", value: "dark_card"},
                 {label: "GPS Map Card (Visual Lokasi)", value: "map_card"},
+                {label: "Minimal Badge (Pill Kecil)", value: "minimal_badge"},
+                {label: "Film Strip (Bilah Bawah)", value: "film_strip"},
               ]}
+            />
+          </div>
+        </div>
+
+        {/* Section: Color Filter */}
+        <div className="border-b border-[#111] py-3">
+          <div className="px-4 mb-2 flex items-center justify-between">
+            <span className="text-[11px] font-semibold text-white">Filter Warna</span>
+          </div>
+          <div className="px-4">
+            <FigmaSelect
+              value={colorFilter}
+              onChange={setColorFilter}
+              options={FILTER_PRESETS.map(f => ({ label: f.label, value: f.value }))}
             />
           </div>
         </div>
@@ -1125,11 +1386,29 @@ export default function CameraApp() {
             />
             
             <div className="text-[10px] text-[#888] mb-1 mt-3">Manual Location Override</div>
-            <FigmaInput 
-              value={manualLocation} 
-              onChange={setManualLocation} 
+            <FigmaInput
+              value={manualLocation}
+              onChange={setManualLocation}
               placeholder="e.g. Jakarta, ID"
             />
+
+            <div className="flex items-center justify-between mt-3">
+              <span className="text-[10px] text-[#888]">Edit Tanggal & Jam Manual</span>
+              <div
+                onClick={() => setUseManualDateTime(!useManualDateTime)}
+                className={`w-8 h-4 rounded-full relative cursor-pointer transition-colors ${useManualDateTime ? "bg-[#8b3dff]" : "bg-[#444] hover:bg-[#555]"}`}
+              >
+                <div className={`absolute top-[2px] w-3 h-3 rounded-full transition-all ${useManualDateTime ? "right-[2px] bg-white" : "left-[2px] bg-[#888]"}`}></div>
+              </div>
+            </div>
+            {useManualDateTime && (
+              <FigmaInput
+                type="datetime-local"
+                value={manualDateTime}
+                onChange={setManualDateTime}
+                placeholder="Pilih tanggal & jam"
+              />
+            )}
           </div>
         </div>
         </>
