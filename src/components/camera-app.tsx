@@ -94,6 +94,29 @@ const loadStoredSettings = (): StoredSettings => {
   return result;
 };
 
+/**
+ * Re-encodes a JPEG/PNG data URL through a fresh off-screen canvas so that
+ * any EXIF / XMP / IPTC metadata from the original source is guaranteed to
+ * be absent in the output.  canvas.toDataURL() never carries metadata from
+ * video frames, but this acts as an explicit, auditable strip step for the
+ * full download path as well.
+ */
+const stripImageMetadata = (dataUrl: string, quality = 0.95): Promise<string> =>
+  new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      const ctx = c.getContext("2d");
+      if (!ctx) { resolve(dataUrl); return; }
+      ctx.drawImage(img, 0, 0);
+      resolve(c.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+
 const drawRoundedRect = (ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) => {
   ctx.beginPath();
   ctx.moveTo(x + radius, y);
@@ -116,7 +139,10 @@ export default function CameraApp() {
   const [activeLayer, setActiveLayer] = useState<string>("camera"); // "camera" or photo id
 
   // Design presets and map coordinates states
-  const [designPreset, setDesignPreset] = useState(() => (loadStoredSettings().designPreset as string) || "standard");
+  // NOTE: All settings are initialized with static defaults so SSR and client
+  // render identically. The real values are hydrated from localStorage in the
+  // useEffect below, after the first paint.
+  const [designPreset, setDesignPreset] = useState("standard");
   const [latLng, setLatLng] = useState<{lat: number, lng: number} | null>(null);
   const [mapDataUrl, setMapDataUrl] = useState<string>("");
 
@@ -145,28 +171,49 @@ export default function CameraApp() {
   const [videoScale, setVideoScale] = useState(1);
   const resizeObserver = useRef<ResizeObserver | null>(null);
 
-  // Settings State (lazily hydrated from localStorage on first render)
-  const [fontFamily, setFontFamily] = useState(() => (loadStoredSettings().fontFamily as string) || "Inter");
-  const [fontWeight, setFontWeight] = useState(() => (loadStoredSettings().fontWeight as string) || "400");
-  const [fontSize, setFontSize] = useState(() => (loadStoredSettings().fontSize as string) || "32");
-  const [alignX, setAlignX] = useState<"left" | "center" | "right">(() => (loadStoredSettings().alignX as "left" | "center" | "right") || "right");
-  const [alignY, setAlignY] = useState<"top" | "center" | "bottom">(() => (loadStoredSettings().alignY as "top" | "center" | "bottom") || "bottom");
+  // Settings State — static defaults, hydrated from localStorage after mount
+  const [fontFamily, setFontFamily] = useState("Inter");
+  const [fontWeight, setFontWeight] = useState("400");
+  const [fontSize, setFontSize] = useState("32");
+  const [alignX, setAlignX] = useState<"left" | "center" | "right">("right");
+  const [alignY, setAlignY] = useState<"top" | "center" | "bottom">("bottom");
 
-  const [fillColor, setFillColor] = useState(() => (loadStoredSettings().fillColor as string) || "#000000");
-  const [strokeColor, setStrokeColor] = useState(() => (loadStoredSettings().strokeColor as string) || "#000000");
-  const [hasStroke, setHasStroke] = useState(() => Boolean(loadStoredSettings().hasStroke));
+  const [fillColor, setFillColor] = useState("#000000");
+  const [strokeColor, setStrokeColor] = useState("#000000");
+  const [hasStroke, setHasStroke] = useState(false);
 
-  const [template, setTemplate] = useState(() => (loadStoredSettings().template as string) || "standard");
+  const [template, setTemplate] = useState("standard");
   const [manualLocation, setManualLocation] = useState("");
-  const [colorFilter, setColorFilter] = useState(() => (loadStoredSettings().colorFilter as string) || "none");
+  const [colorFilter, setColorFilter] = useState("none");
 
   // Manual date/time override
   const [useManualDateTime, setUseManualDateTime] = useState(false);
   const [manualDateTime, setManualDateTime] = useState("");
 
   // Data
-  const [liveTime, setLiveTime] = useState(new Date());
+  const [liveTime, setLiveTime] = useState<Date | null>(null);
   const [gpsAddress, setGpsAddress] = useState("");
+
+  // Hydrate settings + photos from localStorage after first mount (avoids SSR mismatch)
+  useEffect(() => {
+    const s = loadStoredSettings();
+    if (s.designPreset) setDesignPreset(s.designPreset as string);
+    if (s.fontFamily)   setFontFamily(s.fontFamily as string);
+    if (s.fontWeight)   setFontWeight(s.fontWeight as string);
+    if (s.fontSize)     setFontSize(s.fontSize as string);
+    if (s.alignX)       setAlignX(s.alignX as "left" | "center" | "right");
+    if (s.alignY)       setAlignY(s.alignY as "top" | "center" | "bottom");
+    if (s.fillColor)    setFillColor(s.fillColor as string);
+    if (s.strokeColor)  setStrokeColor(s.strokeColor as string);
+    if (s.hasStroke !== undefined) setHasStroke(Boolean(s.hasStroke));
+    if (s.template)     setTemplate(s.template as string);
+    if (s.colorFilter)  setColorFilter(s.colorFilter as string);
+    // Also hydrate photos
+    setPhotos(loadStoredPhotos());
+    // Start live clock after mount so server and client share the same initial null
+    setLiveTime(new Date());
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Persist photo history to localStorage whenever it changes (capped, with quota fallback)
   useEffect(() => {
@@ -400,12 +447,14 @@ export default function CameraApp() {
     return lines;
   };
 
-  const getDisplayTime = () => {
+  const getDisplayTime = (): Date => {
     if (useManualDateTime && manualDateTime) {
       const parsed = new Date(manualDateTime);
       if (!isNaN(parsed.getTime())) return parsed;
     }
-    return liveTime;
+    // liveTime is null before mount (SSR); fall back to current time so callers
+    // always receive a valid Date without needing individual null checks.
+    return liveTime ?? new Date();
   };
 
   const getWatermarkLines = () => {
@@ -714,10 +763,12 @@ export default function CameraApp() {
       ctx.textBaseline = "alphabetic";
     }
 
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.95);
+    // Strip metadata: re-encode through a fresh canvas before storing
+    const rawDataUrl = canvas.toDataURL("image/jpeg", 0.95);
+    const cleanDataUrl = await stripImageMetadata(rawDataUrl, 0.95);
     const newPhoto = {
       id: Date.now().toString(),
-      url: dataUrl,
+      url: cleanDataUrl,
       name: `Photo ${photos.length + 1}`
     };
     
@@ -1402,12 +1453,15 @@ export default function CameraApp() {
               </div>
             </div>
             {useManualDateTime && (
-              <FigmaInput
-                type="datetime-local"
-                value={manualDateTime}
-                onChange={setManualDateTime}
-                placeholder="Pilih tanggal & jam"
-              />
+              <div className="relative flex items-center bg-[#1e1e1e] hover:bg-[#2a2a2a] border border-transparent hover:border-[#444] rounded-[3px] transition-colors focus-within:border-[#0f8bfd] focus-within:bg-[#1e1e1e]">
+                <input
+                  type="datetime-local"
+                  step="1"
+                  value={manualDateTime}
+                  onChange={e => setManualDateTime(e.target.value)}
+                  className="w-full bg-transparent text-[11px] text-[#e0e0e0] px-2 py-1 outline-none placeholder:text-[#555] [color-scheme:dark]"
+                />
+              </div>
             )}
           </div>
         </div>
@@ -1463,35 +1517,30 @@ export default function CameraApp() {
 
               <div className="mt-auto pt-4 pb-2">
                 <button 
-                  onClick={() => {
-                    if (exportQuality !== "MAX") {
-                       const img = new window.Image();
-                       img.onload = () => {
-                          const canvas = document.createElement("canvas");
-                          let scale = 1;
-                          if (exportQuality === "SD") scale = 0.5;
-                          if (exportQuality === "HD") scale = 0.75;
-                          canvas.width = img.width * scale;
-                          canvas.height = img.height * scale;
-                          const ctx = canvas.getContext("2d");
-                          if (ctx) {
-                             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                             const format = "image/jpeg";
-                             const qual = exportQuality === "SD" ? 0.6 : (exportQuality === "HD" ? 0.8 : 1.0);
-                             const dlUrl = canvas.toDataURL(format, qual);
-                             const link = document.createElement("a");
-                             link.download = `${activePhotoObj.name}.jpg`;
-                             link.href = dlUrl;
-                             link.click();
-                          }
-                       };
-                       img.src = activePhotoObj.url;
-                    } else {
-                       const link = document.createElement("a");
-                       link.download = `${activePhotoObj.name}.jpg`;
-                       link.href = activePhotoObj.url;
-                       link.click();
-                    }
+                  onClick={async () => {
+                    const img = new window.Image();
+                    img.src = activePhotoObj.url;
+                    await new Promise<void>((res) => { img.onload = () => res(); img.onerror = () => res(); });
+
+                    const canvas = document.createElement("canvas");
+                    let scale = 1;
+                    if (exportQuality === "SD") scale = 0.5;
+                    if (exportQuality === "HD") scale = 0.75;
+                    // MAX keeps scale = 1
+                    canvas.width = img.naturalWidth * scale;
+                    canvas.height = img.naturalHeight * scale;
+                    const ctx = canvas.getContext("2d");
+                    if (!ctx) return;
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                    // Always re-encode through a fresh canvas to strip any residual metadata
+                    const qual = exportQuality === "SD" ? 0.6 : (exportQuality === "HD" ? 0.8 : 0.95);
+                    const cleanUrl = canvas.toDataURL("image/jpeg", qual);
+
+                    const link = document.createElement("a");
+                    link.download = `${activePhotoObj.name}.jpg`;
+                    link.href = cleanUrl;
+                    link.click();
                   }}
                   className="w-full py-2.5 bg-[#8b3dff] hover:bg-[#7b2dee] text-white text-[13px] font-semibold rounded-[8px] transition-colors shadow-sm"
                 >
